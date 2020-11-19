@@ -12,7 +12,6 @@ module ActionController
     #   class ListsController < ApplicationController
     #     before_action :authenticate, except: :public
     #
-    #     caches_page   :public
     #     caches_action :index, :show
     #   end
     #
@@ -139,9 +138,13 @@ module ActionController
           end
 
           body = render_to_string(controller, body)
-
-          controller.response_body = body
-          controller.content_type = Mime[cache_path.extension]
+          controller.response.strong_etag = body
+          if controller.request.headers['If-None-Match'] == controller.response.etag
+            controller.head :not_modified
+          else
+            controller.response_body = body
+            controller.content_type = Mime[cache_path.extension]
+          end
         end
 
         if ActionPack::VERSION::STRING < "4.1"
@@ -194,8 +197,8 @@ module ActionController
 
             options.reverse_merge!(format: @extension) if options.is_a?(Hash)
           end
-
-          path = controller.url_for(options).split("://", 2).last
+          query = URI.parse(controller.request.url).query
+          path = "#{controller.url_for(options).split("://", 2).last}?#{query}"
           @path = normalize!(path)
         end
 
