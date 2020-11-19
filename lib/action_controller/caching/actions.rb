@@ -107,26 +107,12 @@ module ActionController
         # Declares that +actions+ should be cached.
         # See ActionController::Caching::Actions for details.
         def caches_action(*actions)
-          return unless cache_configured?
+          return unless perform_caching && Rails.application.config.action_controller.cache_store
           options = actions.extract_options!
-          options[:layout] = true unless options.key?(:layout)
           filter_options = options.extract!(:if, :unless).merge(only: actions)
-          cache_options  = options.extract!(:layout, :cache_path).merge(store_options: options)
+          cache_options  = options.extract!(:cache_path).merge(store_options: options)
 
           around_action ActionCacheFilter.new(cache_options), filter_options
-        end
-      end
-
-      def _save_fragment(name, options)
-        content = ""
-        response_body.each do |parts|
-          content << parts
-        end
-
-        if caching_allowed?
-          write_fragment(name, content, options)
-        else
-          content
         end
       end
 
@@ -135,49 +121,36 @@ module ActionController
       end
 
     protected
-      def expire_action(options = {})
-        return unless cache_configured?
-
-        if options.is_a?(Hash) && options[:action].is_a?(Array)
-          options[:action].each { |action| expire_action(options.merge(action: action)) }
-        else
-          expire_fragment(ActionCachePath.new(self, options, false).path)
-        end
-      end
 
       class ActionCacheFilter # :nodoc:
         def initialize(options, &block)
-          @cache_path, @store_options, @cache_layout =
-            options.values_at(:cache_path, :store_options, :layout)
+          @cache_path, @store_options =
+            options.values_at(:cache_path, :store_options)
         end
 
         def around(controller)
-          cache_layout = expand_option(controller, @cache_layout)
           path_options = expand_option(controller, @cache_path)
           cache_path = ActionCachePath.new(controller, path_options || {})
-
-          body = controller.read_fragment(cache_path.path, @store_options)
+          body = Rails.cache.read(cache_path.path, @store_options)
 
           unless body
-            controller.action_has_layout = false unless cache_layout
-            yield
-            controller.action_has_layout = true
-            body = controller._save_fragment(cache_path.path, @store_options)
+            body = yield
+            Rails.cache.write(cache_path.path, body, @store_options)
           end
 
-          body = render_to_string(controller, body) unless cache_layout
+          body = render_to_string(controller, body)
 
           controller.response_body = body
-          controller.content_type = Mime[cache_path.extension || :html]
+          controller.content_type = Mime[cache_path.extension]
         end
 
         if ActionPack::VERSION::STRING < "4.1"
           def render_to_string(controller, body)
-            controller.render_to_string(text: body, layout: true)
+            controller.render_to_string(text: body)
           end
         else
           def render_to_string(controller, body)
-            controller.render_to_string(html: body.html_safe, layout: true)
+            controller.render_to_string(html: body.html_safe)
           end
         end
 
